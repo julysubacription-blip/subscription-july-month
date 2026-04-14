@@ -134,11 +134,11 @@ async def payinfo(update, context):
 
     name, price = plan[1], plan[2]
 
-    await context.bot.send_photo(
-        chat_id=q.from_user.id,
-        photo=open("qr.png", "rb"),
-        caption=f"{name}\n₹{price}\nUPI: {UPI_ID}"
-    )
+await context.bot.send_photo(
+    chat_id=q.from_user.id,
+    photo=open("qr.png", "rb"),
+    caption=f"{name}\n₹{price}\n\n💳 Pay Here:\nhttps://razorpay.me/@coursemafiaofficial/{price}"
+)
 
     kb = [
         [InlineKeyboardButton("📸 Send Payment Screenshot", callback_data="send_ss")],
