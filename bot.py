@@ -137,7 +137,7 @@ async def payinfo(update, context):
     await context.bot.send_photo(
         chat_id=q.from_user.id,
         photo=open("qr.png", "rb"),
-        caption=f"{name}\n₹{price}\nUPI: https://razorpay.me/@coursemafiaofficial/{price}"
+        caption=f"{name}\n₹{price}\nUPI: https://razorpay.me/@coursemafiaofficial"
     )
 
     kb = [
