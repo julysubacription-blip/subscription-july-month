@@ -14,6 +14,7 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
+    # Legacy users
     cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY,
@@ -25,6 +26,7 @@ def init_db():
     )
     """)
 
+    # Plans
     cur.execute("""
     CREATE TABLE IF NOT EXISTS plans (
         plan_key TEXT PRIMARY KEY,
@@ -36,6 +38,7 @@ def init_db():
     )
     """)
 
+    # Subscriptions
     cur.execute("""
     CREATE TABLE IF NOT EXISTS subscriptions (
         id SERIAL PRIMARY KEY,
@@ -53,6 +56,67 @@ def init_db():
         last_renew_reminder_date TEXT
     )
     """)
+
+    # Coupons
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS coupons (
+        code TEXT PRIMARY KEY,
+        discount_type TEXT,
+        value INT,
+        apply_on TEXT,
+        target_key TEXT DEFAULT 'all',
+        active BOOLEAN DEFAULT TRUE
+    )
+    """)
+
+    # Combos
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS combos (
+        combo_key TEXT PRIMARY KEY,
+        name TEXT,
+        discount_type TEXT,
+        discount_value INT,
+        active BOOLEAN DEFAULT TRUE
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS combo_items (
+        id SERIAL PRIMARY KEY,
+        combo_key TEXT,
+        plan_key TEXT
+    )
+    """)
+
+    # Purchases (for correct revenue)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS purchases (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        username TEXT,
+        item_type TEXT,
+        item_key TEXT,
+        item_name TEXT,
+        base_price INT,
+        combo_discount INT DEFAULT 0,
+        coupon_code TEXT,
+        coupon_discount INT DEFAULT 0,
+        final_price INT,
+        purchase_date TEXT,
+        expiry_date TEXT,
+        status TEXT DEFAULT 'approved'
+    )
+    """)
+
+    # Safe alter for older existing databases
+    cur.execute("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS notified_24h BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renew_reminders_sent INT DEFAULT 0")
+    cur.execute("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_renew_reminder_date TEXT")
+
+    cur.execute("ALTER TABLE coupons ADD COLUMN IF NOT EXISTS target_key TEXT DEFAULT 'all'")
+    cur.execute("ALTER TABLE coupons ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
+
+    cur.execute("ALTER TABLE combos ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE")
 
     conn.commit()
 
@@ -272,7 +336,7 @@ def get_total_revenue():
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT COALESCE(SUM(price), 0) FROM subscriptions")
+    cur.execute("SELECT COALESCE(SUM(final_price), 0) FROM purchases WHERE status='approved'")
     total = cur.fetchone()[0]
 
     cur.close()
@@ -285,9 +349,9 @@ def get_daily_revenue(date_str):
     cur = conn.cursor()
 
     cur.execute("""
-    SELECT COALESCE(SUM(price), 0)
-    FROM subscriptions
-    WHERE purchase_date=%s
+    SELECT COALESCE(SUM(final_price), 0)
+    FROM purchases
+    WHERE purchase_date=%s AND status='approved'
     """, (date_str,))
     total = cur.fetchone()[0]
 
@@ -356,3 +420,281 @@ def mark_renew_reminder_sent(sub_id, today_str):
     conn.commit()
     cur.close()
     conn.close()
+
+
+# ================= PURCHASES =================
+def add_purchase(
+    uid,
+    username,
+    item_type,
+    item_key,
+    item_name,
+    base_price,
+    combo_discount,
+    coupon_code,
+    coupon_discount,
+    final_price,
+    purchase_date,
+    expiry_date
+):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO purchases
+    (user_id, username, item_type, item_key, item_name, base_price, combo_discount, coupon_code, coupon_discount, final_price, purchase_date, expiry_date, status)
+    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'approved')
+    """, (
+        uid,
+        username,
+        item_type,
+        item_key,
+        item_name,
+        base_price,
+        combo_discount,
+        coupon_code,
+        coupon_discount,
+        final_price,
+        purchase_date,
+        expiry_date
+    ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# ================= COUPONS =================
+def add_coupon(code, discount_type, value, apply_on, target_key="all", active=True):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO coupons (code, discount_type, value, apply_on, target_key, active)
+    VALUES (%s,%s,%s,%s,%s,%s)
+    ON CONFLICT (code) DO UPDATE SET
+        discount_type = EXCLUDED.discount_type,
+        value = EXCLUDED.value,
+        apply_on = EXCLUDED.apply_on,
+        target_key = EXCLUDED.target_key,
+        active = EXCLUDED.active
+    """, (code.upper(), discount_type.lower(), int(value), apply_on.lower(), target_key, active))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_coupon(code):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT code, discount_type, value, apply_on, target_key, active
+    FROM coupons
+    WHERE code=%s AND active=TRUE
+    """, (code.upper(),))
+    data = cur.fetchone()
+
+    cur.close()
+    conn.close()
+    return data
+
+
+def get_all_coupons():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT code, discount_type, value, apply_on, target_key, active
+    FROM coupons
+    ORDER BY code ASC
+    """)
+    data = cur.fetchall()
+
+    cur.close()
+    conn.close()
+    return data
+
+
+def update_coupon(code, discount_type, value, apply_on, target_key="all", active=True):
+    add_coupon(code, discount_type, value, apply_on, target_key, active)
+
+
+def delete_coupon(code):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM coupons WHERE code=%s", (code.upper(),))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# ================= COMBOS =================
+def add_combo(combo_key, name, discount_type, discount_value, active=True):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO combos (combo_key, name, discount_type, discount_value, active)
+    VALUES (%s,%s,%s,%s,%s)
+    ON CONFLICT (combo_key) DO UPDATE SET
+        name = EXCLUDED.name,
+        discount_type = EXCLUDED.discount_type,
+        discount_value = EXCLUDED.discount_value,
+        active = EXCLUDED.active
+    """, (combo_key, name, discount_type.lower(), int(discount_value), active))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def set_combo_items(combo_key, plan_keys):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM combo_items WHERE combo_key=%s", (combo_key,))
+    for pk in plan_keys:
+        cur.execute("""
+        INSERT INTO combo_items (combo_key, plan_key)
+        VALUES (%s,%s)
+        """, (combo_key, pk))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_combo(combo_key):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT combo_key, name, discount_type, discount_value, active
+    FROM combos
+    WHERE combo_key=%s AND active=TRUE
+    """, (combo_key,))
+    data = cur.fetchone()
+
+    cur.close()
+    conn.close()
+    return data
+
+
+def get_combo_any(combo_key):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT combo_key, name, discount_type, discount_value, active
+    FROM combos
+    WHERE combo_key=%s
+    """, (combo_key,))
+    data = cur.fetchone()
+
+    cur.close()
+    conn.close()
+    return data
+
+
+def get_combo_items(combo_key):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT p.plan_key, p.name, p.price, p.validity, p.demo_link, p.channel_id
+    FROM combo_items ci
+    JOIN plans p ON p.plan_key = ci.plan_key
+    WHERE ci.combo_key=%s
+    ORDER BY p.name ASC
+    """, (combo_key,))
+    data = cur.fetchall()
+
+    cur.close()
+    conn.close()
+    return data
+
+
+def get_all_combos():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT combo_key, name, discount_type, discount_value, active
+    FROM combos
+    WHERE active=TRUE
+    ORDER BY name ASC
+    """)
+    data = cur.fetchall()
+
+    cur.close()
+    conn.close()
+    return data
+
+
+def delete_combo(combo_key):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM combo_items WHERE combo_key=%s", (combo_key,))
+    cur.execute("DELETE FROM combos WHERE combo_key=%s", (combo_key,))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def calculate_combo_price(combo_key):
+    combo = get_combo(combo_key)
+    if not combo:
+        return None
+
+    items = get_combo_items(combo_key)
+    if not items:
+        return None
+
+    total = sum(int(x[2]) for x in items)
+    discount_type = combo[2]
+    discount_value = int(combo[3])
+
+    if discount_type == "percent":
+        discount_amount = int(total * discount_value / 100)
+    else:
+        discount_amount = discount_value
+
+    final_price = max(total - discount_amount, 0)
+
+    return {
+        "combo_key": combo[0],
+        "name": combo[1],
+        "discount_type": discount_type,
+        "discount_value": discount_value,
+        "base_price": total,
+        "combo_discount": discount_amount,
+        "final_price": final_price,
+        "items": items
+    }
+
+
+# ================= BROADCAST USERS =================
+def get_all_user_ids():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT DISTINCT user_id
+    FROM (
+        SELECT user_id FROM users
+        UNION
+        SELECT user_id FROM subscriptions
+    ) t
+    ORDER BY user_id
+    """)
+    data = [r[0] for r in cur.fetchall()]
+
+    cur.close()
+    conn.close()
+    return data
